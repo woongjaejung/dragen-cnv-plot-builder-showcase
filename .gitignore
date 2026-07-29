@@ -1,0 +1,30 @@
+# Generated demo intermediates (synthetic, regenerate with `python3 demo/run_demo.py`)
+demo/_work/
+
+# Never commit real analysis inputs or outputs
+*.dragen.tn.tsv.gz
+*.dragen.seg
+*.dragen.cnv.gff3
+cnv_plot_table*.csv
+cnv_interactive_plot*.html
+
+# Reference and panel design files
+*.gtf
+*.gtf.gz
+*.gff3.gz
+*.bed
+*.bed.gz
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

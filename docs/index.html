@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DRAGEN CNV Plot Builder — a review aid for exon-level copy-number calls</title>
+<meta name="description" content="Turns DRAGEN CNV exome output into one interactive HTML plot, so a reviewer can judge whether an exon-level copy-number call is a true CNV or an artifact. Synthetic demo.">
+<meta name="color-scheme" content="light dark">
+<style>
+/* ---- Tokens -------------------------------------------------------------
+   Palette borrows the plot's own semantics: neutral greys are the batch,
+   teal is the sample under review, amber is a call the caller filtered out. */
+:root {
+  --paper:   #f1f4f6;
+  --surface: #ffffff;
+  --ink:     #0f171e;
+  --muted:   #55636f;
+  --rule:    #d4dbe1;
+  --rule-soft: #e3e8ec;
+  --accent:  #0b6463;   /* the reviewed sample */
+  --accent-ink: #ffffff;
+  --flag:    #8a5210;   /* filtered / rejected */
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --gutter: clamp(1.25rem, 5vw, 4rem);
+  --stack:  clamp(3.5rem, 8vw, 6rem);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0b1015; --surface: #121a21; --ink: #e4ebf1; --muted: #97a5b1;
+    --rule: #24313b; --rule-soft: #1a242c;
+    --accent: #4cc7bd; --accent-ink: #06201f; --flag: #e2a55c;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.65;
+  overflow-x: hidden;         /* belt and braces: page never scrolls sideways */
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 68rem; margin-inline: auto; padding-inline: var(--gutter); }
+
+a { color: var(--accent); text-underline-offset: 0.18em; text-decoration-thickness: 1px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+h1, h2, h3 { line-height: 1.1; letter-spacing: -0.02em; margin: 0; font-weight: 650; }
+h1 { font-size: clamp(2.35rem, 6.2vw, 3.9rem); letter-spacing: -0.035em; line-height: 0.99; font-weight: 700; }
+h2 { font-size: clamp(1.5rem, 3.2vw, 2.05rem); }
+h3 { font-size: 1.05rem; letter-spacing: -0.01em; }
+p { margin: 0 0 1rem; }
+p:last-child { margin-bottom: 0; }
+
+/* Mono eyebrow with a leading hairline — the same hairline that separates
+   every section, so the label reads as part of the rule system. */
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 1.1rem;
+}
+.eyebrow::before {
+  content: "";
+  width: 1.75rem;
+  height: 1px;
+  background: var(--accent);
+  flex: none;
+}
+
+/* ---- Header ------------------------------------------------------------ */
+header { padding-block: clamp(3rem, 7vw, 5.5rem) clamp(2.5rem, 5vw, 4rem); }
+.hero { display: grid; gap: clamp(2.25rem, 5vw, 3.5rem); }
+@media (min-width: 62rem) {
+  .hero { grid-template-columns: minmax(0, 24rem) minmax(0, 1fr); align-items: center; }
+}
+.lede {
+  font-size: clamp(1.05rem, 1.6vw, 1.22rem);
+  color: var(--muted);
+  margin-top: 1.25rem;
+  max-width: 34ch;
+}
+.lede strong { color: var(--ink); font-weight: 600; }
+
+.actions { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+.btn {
+  display: inline-flex; align-items: center; gap: 0.6rem;
+  font-family: var(--mono); font-size: 0.85rem; letter-spacing: 0.02em;
+  padding: 0.85rem 1.35rem; border-radius: 3px; text-decoration: none;
+  border: 1px solid transparent; transition: transform 120ms ease, background-color 120ms ease;
+}
+.btn-primary { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.btn-primary:hover { transform: translateY(-1px); }
+.btn-secondary { border-color: var(--rule); color: var(--ink); background: transparent; }
+.btn-secondary:hover { border-color: var(--accent); }
+.btn svg { flex: none; }
+
+/* ---- Hero figure ------------------------------------------------------- */
+.plot { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 1rem 1rem 0.75rem; margin: 0; }
+.plot svg { display: block; width: 100%; height: auto; }
+.plot figcaption {
+  font-family: var(--mono); font-size: 0.7rem; color: var(--muted);
+  border-top: 1px solid var(--rule-soft); margin-top: 0.75rem; padding-top: 0.65rem;
+  display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem;
+}
+.key { display: inline-flex; align-items: center; gap: 0.4rem; }
+.key::before { content: ""; width: 0.85rem; height: 2px; background: currentColor; }
+.key-batch { color: var(--muted); opacity: 0.85; }
+.key-case  { color: var(--accent); }
+.key-ntc   { color: var(--muted); }
+
+.s-batch { fill: none; stroke: var(--muted); stroke-width: 1; opacity: 0.34; }
+.s-ntc   { fill: none; stroke: var(--muted); stroke-width: 1; opacity: 0.5; stroke-dasharray: 3 3; }
+.s-case  { fill: none; stroke: var(--accent); stroke-width: 2.1; stroke-linejoin: round; }
+.ref     { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 2 4; }
+.axis    { stroke: var(--rule); stroke-width: 1; }
+.tick    { stroke: var(--rule); stroke-width: 1; }
+.lab     { font-family: var(--mono); font-size: 10px; fill: var(--muted); }
+.lab-accent { fill: var(--accent); }
+.callband { fill: var(--accent); opacity: 0.07; }
+
+/* One deliberate motion: the reviewed sample draws itself in on load. */
+@media (prefers-reduced-motion: no-preference) {
+  .s-case { stroke-dasharray: 640; stroke-dashoffset: 640; animation: draw 1.5s cubic-bezier(.3,.7,.3,1) 0.25s forwards; }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+}
+
+/* ---- Synthetic-data notice --------------------------------------------- */
+.notice { border-block: 1px solid var(--rule); background: var(--surface); }
+.notice .wrap { padding-block: 1.5rem; display: grid; gap: 0.5rem 2rem; }
+@media (min-width: 48rem) { .notice .wrap { grid-template-columns: 11rem minmax(0, 1fr); } }
+.notice .eyebrow { margin: 0; }
+.notice p { font-size: 0.95rem; color: var(--muted); max-width: 68ch; }
+.notice strong { color: var(--ink); font-weight: 600; }
+
+/* ---- Sections ---------------------------------------------------------- */
+main section { padding-block: var(--stack); border-bottom: 1px solid var(--rule-soft); }
+main section:last-of-type { border-bottom: 0; }
+.section-head { max-width: 46rem; margin-bottom: clamp(2rem, 4vw, 2.75rem); }
+.section-head p { color: var(--muted); margin-top: 1rem; }
+
+/* Screenshot band */
+.shot { margin: 0; }
+.shot a { display: block; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; background: var(--surface); }
+.shot img { display: block; width: 100%; height: auto; }
+.shot figcaption { font-family: var(--mono); font-size: 0.72rem; color: var(--muted); margin-top: 0.75rem; }
+
+/* Evidence — a definition list, because each item is a named kind of evidence
+   rather than a step in a sequence. */
+.evidence { display: grid; margin: 0; }
+.evidence > div { display: grid; gap: 0.25rem 2rem; padding-block: 1.1rem; border-top: 1px solid var(--rule-soft); }
+.evidence > div:last-child { border-bottom: 1px solid var(--rule-soft); }
+@media (min-width: 48rem) { .evidence > div { grid-template-columns: 11rem minmax(0, 1fr); } }
+.evidence dt { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); padding-top: 0.2rem; }
+.evidence dd { margin: 0; color: var(--muted); }
+.evidence dd strong, .audience strong { color: var(--ink); font-weight: 600; }
+.afterword { margin-top: 1.75rem; color: var(--muted); max-width: 46rem; }
+
+/* Audience */
+.audience { list-style: none; margin: 0; padding: 0; display: grid; }
+.audience li { padding-block: 0.95rem; border-top: 1px solid var(--rule-soft); color: var(--muted); }
+.audience li:last-child { border-bottom: 1px solid var(--rule-soft); }
+@media (min-width: 48rem) { .audience { grid-template-columns: 1fr 1fr; column-gap: 3rem; } }
+
+/* Flow — genuinely a sequence, so the stages carry numbers. */
+.flow { list-style: none; margin: 0 0 1.25rem; padding: 0; display: grid; gap: 1.5rem; counter-reset: stage; }
+@media (min-width: 56rem) { .flow { grid-template-columns: repeat(3, 1fr); gap: 2.25rem; } }
+.flow > li { counter-increment: stage; position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 1.4rem 1.35rem; }
+.flow > li::before { content: counter(stage, decimal-leading-zero); font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.12em; color: var(--muted); display: block; margin-bottom: 0.7rem; }
+/* Connector chevron sits in the gap between stages and flips with the layout. */
+.flow > li:not(:last-child)::after { content: ""; position: absolute; width: 7px; height: 7px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); left: 50%; bottom: -1.05rem; transform: translateX(-50%) rotate(45deg); }
+@media (min-width: 56rem) { .flow > li:not(:last-child)::after { left: auto; right: -1.4rem; top: 50%; bottom: auto; transform: translateY(-50%) rotate(-45deg); } }
+.flow h3 { margin-bottom: 0.5rem; }
+.flow p { font-size: 0.92rem; color: var(--muted); }
+.flow ul { margin: 0.7rem 0 0; padding: 0; list-style: none; font-family: var(--mono); font-size: 0.74rem; color: var(--muted); }
+.flow ul li { padding: 0.25rem 0; border-top: 1px solid var(--rule-soft); }
+.flow ul li:first-child { border-top: 0; padding-top: 0.55rem; }
+.out { border: 1px solid var(--accent); border-radius: 4px; background: var(--surface); padding: 1.15rem 1.35rem; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.9rem; }
+.out b { font-weight: 650; }
+.out span { color: var(--muted); font-size: 0.92rem; }
+
+/* Findings table */
+.runline { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 1.5rem; }
+.scroller { overflow-x: auto; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; min-width: 34rem; font-size: 0.92rem; }
+th, td { text-align: left; padding: 0.85rem 1.1rem; border-top: 1px solid var(--rule-soft); vertical-align: top; color: var(--muted); }
+thead th { border-top: 0; font-family: var(--mono); font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500; white-space: nowrap; }
+tbody th { font-family: var(--mono); font-weight: 600; white-space: nowrap; color: var(--ink); }
+td.flagged { color: var(--flag); }
+/* Narrow screens: three prose columns cannot share 320px, so each finding
+   becomes a stacked block and the header row is left to assistive tech. */
+@media (max-width: 40rem) {
+  .scroller { overflow-x: visible; padding-inline: 1.1rem; }
+  table { min-width: 0; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  tbody tr { display: block; padding-block: 1.05rem; border-top: 1px solid var(--rule-soft); }
+  tbody tr:first-child { border-top: 0; }
+  tbody th, tbody td { display: block; padding: 0; border: 0; }
+  tbody th { margin-bottom: 0.35rem; }
+  tbody td + td { margin-top: 0.35rem; }
+}
+
+/* ---- Footer ------------------------------------------------------------ */
+footer { border-top: 1px solid var(--rule); padding-block: 2.5rem 3.5rem; }
+footer .wrap { display: grid; gap: 0.6rem; }
+footer p { font-size: 0.85rem; color: var(--muted); max-width: 60ch; }
+footer a { overflow-wrap: anywhere; }   /* the repo URL is longer than a 360px column */
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <div>
+      <p class="eyebrow">Clinical genomics &middot; review aid</p>
+      <h1>DRAGEN CNV Plot&nbsp;Builder</h1>
+      <p class="lede">
+        Turns DRAGEN CNV exome output into <strong>one interactive HTML plot</strong>, so a
+        reviewer can open a gene and judge whether an exon-level copy-number call is a
+        <strong>true CNV or an artifact</strong>.
+      </p>
+      <div class="actions">
+        <a class="btn btn-primary" href="demo/">
+          Open the interactive demo
+          <svg width="14" height="10" viewBox="0 0 14 10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M1 5h11M8.5 1.5 12 5l-3.5 3.5"/>
+          </svg>
+        </a>
+        <a class="btn btn-secondary" href="https://github.com/wf4006hufman/dragen-cnv-plot-builder-showcase">Source on GitHub</a>
+      </div>
+    </div>
+
+    <!-- Schematic of one gene: the batch in grey, the reviewed sample in teal,
+         controls dashed at zero. Geometry is fixed, not fetched. -->
+    <figure class="plot">
+      <svg viewBox="0 0 660 262" role="img" aria-label="Schematic exon-level coverage plot: eleven batch samples flat at copy number 2, two no-template controls near zero, and one sample sitting at half coverage across every exon — a whole-gene deletion.">
+        <rect class="callband" x="46" y="22" width="580" height="210"/>
+        <line class="ref" x1="46" y1="35.1" x2="626" y2="35.1"/>
+        <line class="ref" x1="46" y1="100.8" x2="626" y2="100.8"/>
+        <line class="ref" x1="46" y1="166.4" x2="626" y2="166.4"/>
+        <text class="lab" x="0" y="38.6">1.5</text>
+        <text class="lab" x="0" y="104.3">1.0</text>
+        <text class="lab" x="0" y="169.9">0.5</text>
+        <text class="lab" x="0" y="235">0.0</text>
+        <line class="axis" x1="46" y1="232" x2="626" y2="232"/>
+        <g class="tick">
+          <line x1="46" y1="232" x2="46" y2="236"/><line x1="151.5" y1="232" x2="151.5" y2="236"/>
+          <line x1="256.9" y1="232" x2="256.9" y2="236"/><line x1="362.4" y1="232" x2="362.4" y2="236"/>
+          <line x1="467.8" y1="232" x2="467.8" y2="236"/><line x1="573.3" y1="232" x2="573.3" y2="236"/>
+        </g>
+        <polyline class="s-batch" points="46.0,102.3 72.4,97.7 98.7,102.1 125.1,102.6 151.5,106.2 177.8,102.0 204.2,94.2 230.5,98.2 256.9,94.6 283.3,99.3 309.6,98.4 336.0,99.7 362.4,110.6 388.7,95.7 415.1,97.8 441.5,97.8 467.8,110.7 494.2,111.0 520.5,106.0 546.9,103.5 573.3,98.9 599.6,101.0 626.0,97.7"/>
+        <polyline class="s-batch" points="46.0,104.5 72.4,98.9 98.7,98.4 125.1,104.7 151.5,90.6 177.8,97.5 204.2,93.7 230.5,104.4 256.9,105.1 283.3,102.8 309.6,101.4 336.0,97.0 362.4,99.3 388.7,103.4 415.1,106.4 441.5,103.8 467.8,93.5 494.2,105.5 520.5,99.3 546.9,98.2 573.3,109.5 599.6,100.5 626.0,93.0"/>
+        <polyline class="s-batch" points="46.0,112.6 72.4,102.6 98.7,101.4 125.1,105.6 151.5,97.8 177.8,101.1 204.2,109.4 230.5,95.9 256.9,96.8 283.3,95.2 309.6,92.2 336.0,98.6 362.4,100.0 388.7,108.4 415.1,97.1 441.5,104.4 467.8,103.4 494.2,108.2 520.5,106.5 546.9,103.9 573.3,93.1 599.6,112.8 626.0,109.4"/>
+        <polyline class="s-batch" points="46.0,99.3 72.4,92.2 98.7,97.3 125.1,112.0 151.5,115.6 177.8,98.6 204.2,105.1 230.5,107.4 256.9,95.0 283.3,94.2 309.6,99.8 336.0,99.3 362.4,98.2 388.7,91.3 415.1,97.1 441.5,97.7 467.8,97.5 494.2,110.0 520.5,93.2 546.9,95.1 573.3,97.6 599.6,112.4 626.0,104.5"/>
+        <polyline class="s-batch" points="46.0,95.8 72.4,111.4 98.7,101.8 125.1,94.7 151.5,108.5 177.8,91.2 204.2,97.5 230.5,101.6 256.9,98.8 283.3,96.9 309.6,100.0 336.0,94.0 362.4,104.7 388.7,103.2 415.1,94.6 441.5,100.6 467.8,106.0 494.2,95.2 520.5,92.1 546.9,103.4 573.3,108.9 599.6,101.5 626.0,101.6"/>
+        <polyline class="s-batch" points="46.0,102.5 72.4,92.5 98.7,106.8 125.1,93.3 151.5,108.2 177.8,105.4 204.2,97.0 230.5,94.1 256.9,95.7 283.3,98.7 309.6,99.9 336.0,99.8 362.4,97.4 388.7,101.8 415.1,99.1 441.5,97.4 467.8,100.7 494.2,96.2 520.5,97.4 546.9,88.9 573.3,98.8 599.6,103.3 626.0,103.0"/>
+        <polyline class="s-batch" points="46.0,100.8 72.4,95.3 98.7,102.7 125.1,98.5 151.5,89.9 177.8,115.9 204.2,107.4 230.5,99.3 256.9,98.4 283.3,99.3 309.6,103.3 336.0,96.9 362.4,99.1 388.7,103.8 415.1,86.4 441.5,98.7 467.8,104.0 494.2,101.3 520.5,102.1 546.9,101.1 573.3,116.9 599.6,103.6 626.0,94.8"/>
+        <polyline class="s-batch" points="46.0,107.7 72.4,101.1 98.7,95.1 125.1,95.7 151.5,91.9 177.8,110.8 204.2,102.8 230.5,102.8 256.9,97.1 283.3,94.3 309.6,116.6 336.0,94.3 362.4,109.3 388.7,96.7 415.1,109.6 441.5,99.7 467.8,93.7 494.2,101.6 520.5,99.6 546.9,96.0 573.3,99.9 599.6,101.3 626.0,91.7"/>
+        <polyline class="s-batch" points="46.0,94.6 72.4,102.5 98.7,84.5 125.1,107.5 151.5,95.3 177.8,102.3 204.2,100.0 230.5,96.6 256.9,99.4 283.3,97.0 309.6,109.8 336.0,109.7 362.4,97.1 388.7,106.4 415.1,106.8 441.5,109.4 467.8,93.3 494.2,96.3 520.5,92.0 546.9,106.3 573.3,100.7 599.6,107.5 626.0,96.2"/>
+        <polyline class="s-batch" points="46.0,91.4 72.4,106.0 98.7,91.5 125.1,94.9 151.5,101.8 177.8,112.4 204.2,92.4 230.5,101.3 256.9,104.3 283.3,98.4 309.6,98.3 336.0,91.9 362.4,106.8 388.7,94.0 415.1,92.0 441.5,92.2 467.8,101.8 494.2,105.1 520.5,94.7 546.9,100.1 573.3,100.0 599.6,92.3 626.0,102.3"/>
+        <polyline class="s-batch" points="46.0,114.3 72.4,103.0 98.7,111.7 125.1,95.9 151.5,98.9 177.8,104.4 204.2,100.8 230.5,95.8 256.9,100.3 283.3,92.9 309.6,101.1 336.0,94.6 362.4,91.9 388.7,91.2 415.1,104.7 441.5,95.6 467.8,111.8 494.2,107.1 520.5,112.3 546.9,94.4 573.3,108.0 599.6,100.8 626.0,101.9"/>
+        <polyline class="s-ntc" points="46.0,225.5 72.4,227.0 98.7,224.8 125.1,220.7 151.5,225.3 177.8,224.0 204.2,222.8 230.5,226.0 256.9,228.7 283.3,226.9 309.6,222.6 336.0,229.4 362.4,227.0 388.7,222.8 415.1,223.4 441.5,225.4 467.8,223.3 494.2,225.0 520.5,228.5 546.9,229.4 573.3,227.1 599.6,223.0 626.0,226.9"/>
+        <polyline class="s-ntc" points="46.0,227.8 72.4,227.5 98.7,229.4 125.1,225.7 151.5,228.5 177.8,224.5 204.2,229.4 230.5,224.6 256.9,227.1 283.3,229.4 309.6,223.5 336.0,226.2 362.4,229.4 388.7,227.7 415.1,224.7 441.5,226.6 467.8,223.4 494.2,223.5 520.5,223.7 546.9,224.6 573.3,221.9 599.6,223.7 626.0,224.3"/>
+        <polyline class="s-case" points="46.0,175.9 72.4,162.3 98.7,160.4 125.1,167.7 151.5,168.5 177.8,157.5 204.2,174.5 230.5,164.2 256.9,155.2 283.3,170.6 309.6,163.2 336.0,157.7 362.4,166.9 388.7,163.8 415.1,162.2 441.5,170.5 467.8,166.8 494.2,165.0 520.5,162.6 546.9,166.5 573.3,167.3 599.6,171.0 626.0,168.0"/>
+        <text class="lab" x="46" y="252">exon 1</text>
+        <text class="lab" x="626" y="252" text-anchor="end">exon 23</text>
+        <text class="lab lab-accent" x="330" y="252" text-anchor="middle">PASS DEL &mdash; whole gene</text>
+      </svg>
+      <figcaption>
+        <span class="key key-batch">batch</span>
+        <span class="key key-case">sample under review</span>
+        <span class="key key-ntc">no-template control</span>
+        <span>normalized coverage &middot; synthetic</span>
+      </figcaption>
+    </figure>
+  </div>
+</header>
+
+<div class="notice">
+  <div class="wrap">
+    <p class="eyebrow">Synthetic data</p>
+    <p>
+      Everything on this site is <strong>synthetic</strong>, generated from a fixed seed by code
+      committed to this repository. No patient data, no sample identifiers, no panel design, and
+      none of the production source. The page loads <strong>no third-party resource</strong> and
+      makes no network request.
+    </p>
+  </div>
+</div>
+
+<main>
+  <!-- The screenshot is committed separately. If it is missing the whole section
+       removes itself, so the page reads as written rather than leaving a gap. -->
+  <section aria-labelledby="output" id="output-section">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">The output</p>
+        <h2 id="output">One file the reviewer opens, searches, and attaches to a case</h2>
+      </div>
+      <figure class="shot">
+        <a href="demo/">
+          <img src="assets/demo-plot.png" width="2400" height="1010"
+               alt="The interactive plot: exon-level coverage for one gene, every sample in the batch overlaid, copy-state reference lines, and a table of calls underneath."
+               onerror="document.getElementById('output-section').remove()">
+        </a>
+        <figcaption>The generated plot, synthetic batch &mdash; select to open the live demo.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section aria-labelledby="why">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Why it exists</p>
+        <h2 id="why">A copy number, a quality score, and a filter tag do not settle the question</h2>
+        <p>
+          A CNV call arrives as those three numbers. Deciding whether it is real is a judgement,
+          and the numbers alone do not support it. Five things do, and the reviewer needs them
+          in one view.
+        </p>
+      </div>
+      <dl class="evidence">
+        <div>
+          <dt>Per exon</dt>
+          <dd>Every exon in the called region as its own point, <strong>not the segment average</strong> &mdash; a clean shift across a whole gene looks nothing like one noisy capture target.</dd>
+        </div>
+        <div>
+          <dt>The batch</dt>
+          <dd>The same targets in every other sample, on the same axis. A dip shared by the whole batch is a <strong>capture or GC artifact</strong>, not a deletion in one patient.</dd>
+        </div>
+        <div>
+          <dt>Copy states</dt>
+          <dd>Reference lines where diploid, heterozygous deletion, and heterozygous duplication should sit, so magnitude is read against an expectation rather than a feeling.</dd>
+        </div>
+        <div>
+          <dt>Controls</dt>
+          <dd>How the no-template controls behaved at the same positions.</dd>
+        </div>
+        <div>
+          <dt>The caller</dt>
+          <dd>What the caller decided, <strong>including the calls it filtered out</strong>, and why &mdash; a rejected call the reviewer never sees is a rejected call the reviewer cannot disagree with.</dd>
+        </div>
+      </dl>
+      <p class="afterword">
+        Assembling that by hand means joining three files per sample and plotting gene by gene.
+      </p>
+    </div>
+  </section>
+
+  <section aria-labelledby="who">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">Who it is for</p>
+        <h2 id="who">People who have to defend the call</h2>
+      </div>
+      <ul class="audience">
+        <li><strong>Clinical genomics reviewers and variant scientists</strong> confirming or rejecting exon-level calls before they reach a report</li>
+        <li><strong>Molecular pathology and diagnostic lab staff</strong> who need the evidence in one view rather than across three files</li>
+        <li><strong>NGS bioinformatics and field support engineers</strong> triaging whether a suspicious call is biology or the panel</li>
+        <li><strong>Panel and assay developers</strong> watching how a capture design behaves across a batch, target by target</li>
+        <li><strong>Anyone shipping analysis tooling to non-technical users</strong> on locked-down clinical workstations</li>
+      </ul>
+    </div>
+  </section>
+
+  <section aria-labelledby="how">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">How it works</p>
+        <h2 id="how">Three stages, one artifact</h2>
+      </div>
+      <ol class="flow">
+        <li>
+          <h3>DRAGEN result folders</h3>
+          <p>One folder per sample, plus an annotation source that names genes and exons.</p>
+          <ul>
+            <li>per-target normalized coverage &mdash; required</li>
+            <li>segment means &mdash; optional</li>
+            <li>calls and filter tags &mdash; optional</li>
+            <li>gene / exon annotation</li>
+          </ul>
+        </li>
+        <li>
+          <h3>Build table</h3>
+          <p>Annotate every target to its gene and exon, attach the segments and the calls, and emit one row per sample &times; target.</p>
+        </li>
+        <li>
+          <h3>Build plot</h3>
+          <p>Group by gene, lay out the exon axis, attach the calls, embed one lazily-parsed payload per gene, inline Plotly.</p>
+        </li>
+      </ol>
+      <p class="out">
+        <b>One self-contained interactive HTML file</b>
+        <span>opens offline, no install, nothing to fetch</span>
+      </p>
+    </div>
+  </section>
+
+  <section aria-labelledby="demo">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="eyebrow">What the demo shows</p>
+        <h2 id="demo">Six findings, planted on purpose</h2>
+      </div>
+      <p class="runline">12 genes &middot; 14 samples &middot; 2 no-template controls &middot; fixed seed</p>
+      <div class="scroller">
+        <table>
+          <thead>
+            <tr><th scope="col">Gene</th><th scope="col">What it looks like</th><th scope="col">The point</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">BRCA1</th><td>Every exon at half coverage, PASS deletion across the gene</td><td>The textbook true CNV, in one sample only</td></tr>
+            <tr><th scope="row">EGFR</th><td>A short run of exons lifted, PASS duplication</td><td>A focal event that reads as convincing because the flanking exons are flat</td></tr>
+            <tr><th scope="row">PTEN</th><td>One exon low, everything else normal &mdash; call filtered</td><td class="flagged">A single noisy target. This is why filtered calls are shown</td></tr>
+            <tr><th scope="row">CFTR</th><td>The same two exons dip in <em>every</em> sample</td><td>A panel artifact, not a deletion. Only visible because the batch is overlaid</td></tr>
+            <tr><th scope="row">DMD</th><td>A deletion on a negative-strand gene</td><td>The plot reads 5&prime;&rarr;3&prime;, in transcript order rather than coordinate order</td></tr>
+            <tr><th scope="row">TP53</th><td>A plausible-looking event the caller rejected on quality</td><td class="flagged">The reviewer gets to see it, and to disagree</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <a class="btn btn-primary" href="demo/">
+          Open the interactive demo
+          <svg width="14" height="10" viewBox="0 0 14 10" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M1 5h11M8.5 1.5 12 5l-3.5 3.5"/>
+          </svg>
+        </a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>MIT licensed &middot; <a href="https://github.com/wf4006hufman/dragen-cnv-plot-builder-showcase">github.com/wf4006hufman/dragen-cnv-plot-builder-showcase</a></p>
+    <p>A review aid, not a diagnostic device. It does not make or alter a clinical call; it shows a reviewer the evidence behind one.</p>
+  </div>
+</footer>
+
+</body>
+</html>
