@@ -1,0 +1,5 @@
+# Third-party library shipped so the demo page loads nothing remote.
+docs/vendor/** linguist-vendored
+
+# Build output of `python3 demo/run_demo.py`, committed so GitHub Pages can serve it.
+docs/demo/index.html linguist-generated

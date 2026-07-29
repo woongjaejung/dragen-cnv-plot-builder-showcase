@@ -84,17 +84,17 @@ something was rejected instead of only trusting what passed.
 ```mermaid
 flowchart TB
     subgraph IN["DRAGEN result folders, one per sample"]
-        A1["*.dragen.tn.tsv.gz<br/>per-target normalized coverage<br/><i>required</i>"]
-        A2["*.dragen.seg<br/>segment means<br/><i>optional</i>"]
-        A3["*.dragen.cnv.gff3<br/>calls + filter tags<br/><i>optional</i>"]
+        A1["*.dragen.tn.tsv.gz<br/>per-target normalized coverage<br/>(required)"]
+        A2["*.dragen.seg<br/>segment means<br/>(optional)"]
+        A3["*.dragen.cnv.gff3<br/>calls + filter tags<br/>(optional)"]
     end
     ANN["Annotation<br/>GENCODE GTF / RefSeq GFF3 /<br/>panel BED-TSV-CSV-XLSX"]
 
-    IN --> S1["<b>Step 1 — build table</b><br/>annotate each target to gene + exon,<br/>attach segments and calls,<br/>emit one row per sample x target"]
+    IN --> S1["Step 1 — build table<br/>annotate each target to gene + exon,<br/>attach segments and calls,<br/>emit one row per sample x target"]
     ANN --> S1
     S1 --> T[("cnv_plot_table.csv")]
-    T --> S2["<b>Step 2 — build plot</b><br/>group by gene, lay out the exon axis,<br/>attach calls, embed one lazy JSON<br/>payload per gene, inline Plotly"]
-    S2 --> H["<b>One interactive HTML file</b><br/>self-contained, opens offline,<br/>attachable to a case record"]
+    T --> S2["Step 2 — build plot<br/>group by gene, lay out the exon axis,<br/>attach calls, embed one lazy JSON<br/>payload per gene, inline Plotly"]
+    S2 --> H["One interactive HTML file<br/>self-contained, opens offline,<br/>attachable to a case record"]
 
     H --> R["Reviewer:<br/>search gene → read exons →<br/>compare batch → check calls"]
 ```
