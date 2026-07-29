@@ -1,3 +1,10 @@
+# Linguist treats a top-level demo/ directory as example material and drops it
+# from the language statistics. The demo pipeline is the real code in this
+# repository, so opt it back in explicitly.
+demo/** linguist-documentation=false
+demo/** linguist-vendored=false
+demo/** linguist-detectable=true
+
 # Third-party library shipped so the demo page loads nothing remote.
 docs/vendor/** linguist-vendored
 
