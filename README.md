@@ -13,9 +13,9 @@ installing Python, running a notebook, or opening a spreadsheet.
 
 ## Live demo
 
-**[Open the synthetic CNV plot →](https://wf4006hufman.github.io/dragen-cnv-plot-builder-showcase/)**
+**[Open the synthetic CNV plot →](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/)**
 
-[![Interactive exon-level CNV plot, synthetic data](assets/demo-plot.png)](https://wf4006hufman.github.io/dragen-cnv-plot-builder-showcase/demo/)
+[![Interactive exon-level CNV plot, synthetic data](assets/demo-plot.png)](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/demo/)
 
 Twelve genes, fourteen synthetic samples including two no-template controls.
 Search a gene, switch the y-axis metric, toggle a sample off in the legend, and
