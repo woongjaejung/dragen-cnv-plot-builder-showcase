@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 woongjaejung
+Copyright (c) 2026 Woongjae Jung
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Trademark & Non-Affiliation Notice:
+This repository is an independent, unofficial open-source showcase and is NOT
+an official product of, nor affiliated with, endorsed by, or sponsored by
+Illumina, Inc. "DRAGEN" is a trademark of Illumina, Inc. and is referenced
+solely to describe input file format compatibility. All data in this repository
+is deterministic synthetic data. This software is a technical review aid, not
+an in-vitro diagnostic (IVD) medical device.
