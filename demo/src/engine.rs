@@ -1,13 +1,9 @@
 //! Single-pass multi-core Rust showcase engine (`rayon` + `MultiGzDecoder` + 100kb bins).
 //!
-//! Demonstrates the v4 architecture on synthetic DRAGEN folders:
-//! - Target-keyed `O(targets)` annotation resolution
-//! - Parallel per-sample BGZF/gzip decompression and 100kb binned interval join
-//! - Single-pass in-memory per-gene aggregation (no intermediate multi-hundred-MB CSV required)
-//! - Per-gene lazy `<script type="application/json">` HTML emission to stay far below V8's
-//!   `String::kMaxLength` (`536,870,888` characters).
+//! Emits the v4 interactive HTML report (`plot-meta` + per-gene `<script id="gN">` lazy JSON
+//! payloads + Light/Dark theme toggle) directly from synthetic DRAGEN folders.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -16,12 +12,13 @@ use anyhow::{bail, Context, Result};
 use flate2::read::MultiGzDecoder;
 use rayon::prelude::*;
 use regex::Regex;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 
 pub const V8_STRING_LIMIT: usize = 536_870_888;
 const BIN_SIZE: i64 = 100_000;
-static PLOT_RUNTIME_JS: &str = include_str!("plot_runtime.js");
+static PAGE_CSS: &str = include_str!("page.css");
+static PAGE_JS: &str = include_str!("page.js");
 
 #[derive(Clone, Debug)]
 struct PanelAnnotation {
@@ -65,57 +62,81 @@ struct TargetRow {
 
 struct SampleData {
     sample_id: String,
-    result_dir: PathBuf,
     rows: Vec<TargetRow>,
 }
 
 #[derive(Serialize)]
-struct TargetColumns {
-    start: Vec<i64>,
-    end: Vec<i64>,
-    target_name: Vec<String>,
-    exon_number: Vec<i64>,
-    x: Vec<usize>,
+struct PlotMetaJson<'a> {
+    has_gene_data: bool,
+    group_label: &'a str,
+    samples: &'a [String],
+    ntc_samples: &'a [String],
+    groups: &'a [String],
+    default_group: &'a str,
+    dropped_unannotated_rows: usize,
 }
 
 #[derive(Serialize)]
-struct SampleTracePayload {
+struct SerializedCall {
     sample_id: String,
-    ntc: bool,
-    tn_log2: Vec<f64>,
-    segment_mean: Vec<Option<f64>>,
-}
-
-#[derive(Serialize)]
-struct CallPayload {
-    sample_id: String,
-    #[serde(rename = "type")]
+    status: &'static str,
     call_type: String,
-    copy_number: i64,
-    filter: String,
-    qual: f64,
-    start: i64,
-    end: i64,
-    exons: Vec<i64>,
-}
-
-#[derive(Serialize)]
-struct GeneGroupPayload {
-    gene: String,
-    strand: String,
+    call_copy_number: String,
+    call_filter: String,
     contig: String,
-    targets: TargetColumns,
-    samples: Vec<SampleTracePayload>,
-    calls: Vec<CallPayload>,
+    call_start: String,
+    call_end: String,
+    exon_labels: Vec<String>,
+    x_start: Option<usize>,
+    x_end: Option<usize>,
+    target_count: usize,
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PageConfig {
-    default_group: String,
-    ntc_pattern: String,
-    group_count: usize,
-    group_ids: BTreeMap<String, String>,
+struct SerializedGroup {
+    targets: Vec<[String; 5]>,
+    s: Vec<usize>,
+    x: Vec<usize>,
+    v: Vec<Option<f64>>,
+    m: Vec<Option<f64>>,
+    c: Vec<i32>,
+    calls: Vec<SerializedCall>,
+    tv: Vec<f64>,
+    tt: Vec<String>,
+    bp: Vec<f64>,
+    strand: String,
+}
+
+fn round4(x: f64) -> Option<f64> {
+    if !x.is_finite() {
+        return None;
+    }
+    format!("{x:.4}").parse::<f64>().ok()
+}
+
+fn build_axis_metadata(labels_by_rank: &[(usize, String)]) -> (Vec<f64>, Vec<String>, Vec<f64>) {
+    if labels_by_rank.is_empty() {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+    let mut tick_vals = Vec::new();
+    let mut tick_text = Vec::new();
+    let mut boundaries = Vec::new();
+    let mut run_label = labels_by_rank[0].1.clone();
+    let mut run_start = labels_by_rank[0].0;
+    let mut last = run_start;
+    for (rank, label) in &labels_by_rank[1..] {
+        if *label != run_label {
+            tick_vals.push((run_start + last) as f64 / 2.0);
+            tick_text.push(run_label);
+            boundaries.push(last as f64 + 0.5);
+            run_label = label.clone();
+            run_start = *rank;
+        }
+        last = *rank;
+    }
+    tick_vals.push((run_start + last) as f64 / 2.0);
+    tick_text.push(run_label);
+    (tick_vals, tick_text, boundaries)
 }
 
 fn load_panel_tsv(path: &Path) -> Result<FxHashMap<(String, i64, i64), PanelAnnotation>> {
@@ -286,11 +307,7 @@ fn parse_one_sample(sample_dir: &Path) -> Result<SampleData> {
         });
     }
 
-    Ok(SampleData {
-        sample_id,
-        result_dir: sample_dir.to_path_buf(),
-        rows,
-    })
+    Ok(SampleData { sample_id, rows })
 }
 
 fn html_escape(s: &str) -> String {
@@ -318,7 +335,6 @@ pub fn build_showcase_html(
     let panel = load_panel_tsv(annotation_tsv)?;
     let ntc_re = Regex::new(ntc_pattern)?;
 
-    // Parallel decompression + interval join across all samples via Rayon
     let parsed_samples: Vec<SampleData> = sample_dirs
         .par_iter()
         .map(|d| parse_one_sample(d))
@@ -398,19 +414,35 @@ pub fn build_showcase_html(
         w.flush()?;
     }
 
-    // Group in-memory by gene in stable gene-appearance order
-    let mut gene_order: Vec<String> = Vec::new();
-    let mut gene_seen: BTreeSet<String> = BTreeSet::new();
+    let sorted_samples: Vec<String> = parsed_samples
+        .iter()
+        .map(|s| s.sample_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let sample_index: HashMap<String, usize> = sorted_samples
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.clone(), i))
+        .collect();
+    let ntc_samples: Vec<String> = sorted_samples
+        .iter()
+        .filter(|s| ntc_re.is_match(s))
+        .cloned()
+        .collect();
+
+    let mut group_names_set: BTreeSet<String> = BTreeSet::new();
     for r in &parsed_samples[0].rows {
         if let Some(ann) = panel.get(&(r.contig.clone(), r.start, r.end)) {
-            if gene_seen.insert(ann.gene.clone()) {
-                gene_order.push(ann.gene.clone());
-            }
+            group_names_set.insert(ann.gene.clone());
         }
     }
+    let group_names: Vec<String> = group_names_set.into_iter().collect();
 
-    let mut payloads: Vec<GeneGroupPayload> = Vec::with_capacity(gene_order.len());
-    for gene in &gene_order {
+    let mut serialized_groups = Vec::with_capacity(group_names.len());
+    let mut largest = 0usize;
+
+    for gene in &group_names {
         let mut target_keys: Vec<(String, i64, i64)> = parsed_samples[0]
             .rows
             .iter()
@@ -423,262 +455,282 @@ pub fn build_showcase_html(
                 }
             })
             .collect();
-        target_keys.sort_by_key(|k| (k.1, k.2));
+        target_keys.sort_by_key(|k| (panel[k].exon_number, k.1, k.2));
         target_keys.dedup();
 
-        let first_ann = &panel[&target_keys[0]];
-        let contig = target_keys[0].0.clone();
-        let strand = first_ann.strand.clone();
+        let strand = panel[&target_keys[0]].strand.clone();
+        let mut targets = Vec::with_capacity(target_keys.len());
+        let mut rank_by_key: FxHashMap<(String, i64, i64), usize> = FxHashMap::default();
+        let mut labels_by_rank: Vec<(usize, String)> = Vec::with_capacity(target_keys.len());
 
-        let mut t_cols = TargetColumns {
-            start: Vec::with_capacity(target_keys.len()),
-            end: Vec::with_capacity(target_keys.len()),
-            target_name: Vec::with_capacity(target_keys.len()),
-            exon_number: Vec::with_capacity(target_keys.len()),
-            x: Vec::with_capacity(target_keys.len()),
-        };
         for (idx, k) in target_keys.iter().enumerate() {
+            let rank = idx + 1;
             let ann = &panel[k];
-            t_cols.start.push(k.1);
-            t_cols.end.push(k.2);
-            t_cols.target_name.push(ann.target_name.clone());
-            t_cols.exon_number.push(ann.exon_number);
-            t_cols.x.push(idx);
+            let exon_lbl = ann.exon_number.to_string();
+            rank_by_key.insert(k.clone(), rank);
+            labels_by_rank.push((rank, exon_lbl.clone()));
+            targets.push([
+                exon_lbl,
+                k.0.clone(),
+                k.1.to_string(),
+                k.2.to_string(),
+                ann.target_name.clone(),
+            ]);
         }
 
-        let mut sample_traces = Vec::with_capacity(parsed_samples.len());
-        let mut calls_out: Vec<CallPayload> = Vec::new();
-        let mut seen_calls: BTreeSet<(String, String, i64, String, i64, i64)> = BTreeSet::new();
+        let (tv, tt, bp) = build_axis_metadata(&labels_by_rank);
 
-        for s in &parsed_samples {
-            let mut row_by_key: FxHashMap<(String, i64, i64), &TargetRow> = FxHashMap::default();
-            for r in &s.rows {
-                row_by_key.insert((r.contig.clone(), r.start, r.end), r);
-            }
-            let mut tn_vec = Vec::with_capacity(target_keys.len());
-            let mut seg_vec = Vec::with_capacity(target_keys.len());
+        let mut s_arr = Vec::new();
+        let mut x_arr = Vec::new();
+        let mut v_arr = Vec::new();
+        let mut m_arr = Vec::new();
+        let mut c_arr = Vec::new();
 
-            for k in &target_keys {
-                let r = row_by_key[k];
-                tn_vec.push(r.tn_log2);
-                seg_vec.push(r.seg.as_ref().map(|seg| seg.mean));
+        #[derive(Default)]
+        struct CallWork {
+            sample_id: String,
+            call_type: String,
+            cn: String,
+            filter: String,
+            contig: String,
+            start: String,
+            end: String,
+            labels: BTreeSet<i64>,
+            ranks: BTreeSet<usize>,
+        }
+        let mut call_map: FxHashMap<(String, String, i64, String, i64, i64), usize> =
+            FxHashMap::default();
+        let mut calls_work: Vec<CallWork> = Vec::new();
 
-                if let Some(c) = &r.best_call {
+        for sp in &parsed_samples {
+            let si = sample_index[&sp.sample_id];
+            for r in &sp.rows {
+                let k = (r.contig.clone(), r.start, r.end);
+                let Some(&rank) = rank_by_key.get(&k) else {
+                    continue;
+                };
+                let ann = &panel[&k];
+                s_arr.push(si);
+                x_arr.push(rank);
+                v_arr.push(round4(r.tn_log2));
+                m_arr.push(r.seg.as_ref().and_then(|seg| round4(seg.mean)));
+
+                if let Some(bc) = &r.best_call {
                     let ck = (
-                        s.sample_id.clone(),
-                        c.call_type.clone(),
-                        c.copy_number,
-                        c.filter.clone(),
-                        c.start,
-                        c.end,
+                        sp.sample_id.clone(),
+                        bc.call_type.clone(),
+                        bc.copy_number,
+                        bc.filter.clone(),
+                        bc.start,
+                        bc.end,
                     );
-                    if seen_calls.insert(ck) {
-                        let mut exons: Vec<i64> = target_keys
-                            .iter()
-                            .filter(|tk| tk.1 <= c.end && tk.2 >= c.start)
-                            .map(|tk| panel[tk].exon_number)
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .collect();
-                        exons.sort();
-                        calls_out.push(CallPayload {
-                            sample_id: s.sample_id.clone(),
-                            call_type: c.call_type.clone(),
-                            copy_number: c.copy_number,
-                            filter: c.filter.clone(),
-                            qual: c.qual,
-                            start: c.start,
-                            end: c.end,
-                            exons,
+                    let ci = if let Some(&idx) = call_map.get(&ck) {
+                        idx
+                    } else {
+                        let idx = calls_work.len();
+                        call_map.insert(ck, idx);
+                        calls_work.push(CallWork {
+                            sample_id: sp.sample_id.clone(),
+                            call_type: bc.call_type.clone(),
+                            cn: bc.copy_number.to_string(),
+                            filter: bc.filter.clone(),
+                            contig: r.contig.clone(),
+                            start: bc.start.to_string(),
+                            end: bc.end.to_string(),
+                            labels: BTreeSet::new(),
+                            ranks: BTreeSet::new(),
                         });
-                    }
+                        idx
+                    };
+                    calls_work[ci].labels.insert(ann.exon_number);
+                    calls_work[ci].ranks.insert(rank);
+                    c_arr.push(ci as i32);
+                } else {
+                    c_arr.push(-1);
                 }
             }
-
-            sample_traces.push(SampleTracePayload {
-                sample_id: s.sample_id.clone(),
-                ntc: ntc_re.is_match(&s.sample_id),
-                tn_log2: tn_vec,
-                segment_mean: seg_vec,
-            });
         }
 
-        let _ = &s_unused_suppress(&parsed_samples);
-        payloads.push(GeneGroupPayload {
-            gene: gene.clone(),
+        let calls: Vec<SerializedCall> = calls_work
+            .into_iter()
+            .map(|cw| {
+                let x_start = cw.ranks.iter().min().copied();
+                let x_end = cw.ranks.iter().max().copied();
+                let target_count = cw.ranks.len();
+                SerializedCall {
+                    sample_id: cw.sample_id,
+                    status: if cw.filter == "PASS" { "PASS" } else { "FILTERED" },
+                    call_type: cw.call_type,
+                    call_copy_number: cw.cn,
+                    call_filter: cw.filter,
+                    contig: cw.contig,
+                    call_start: cw.start,
+                    call_end: cw.end,
+                    exon_labels: cw.labels.into_iter().map(|n| n.to_string()).collect(),
+                    x_start,
+                    x_end,
+                    target_count,
+                }
+            })
+            .collect();
+
+        let sg = SerializedGroup {
+            targets,
+            s: s_arr,
+            x: x_arr,
+            v: v_arr,
+            m: m_arr,
+            c: c_arr,
+            calls,
+            tv,
+            tt,
+            bp,
             strand,
-            contig,
-            targets: t_cols,
-            samples: sample_traces,
-            calls: calls_out,
-        });
+        };
+        let payload = serde_json::to_string(&sg)?.replace("</script", "<\\/script");
+        largest = largest.max(payload.len());
+        serialized_groups.push(payload);
     }
 
-    let mut group_scripts = Vec::with_capacity(payloads.len());
-    let mut group_ids = BTreeMap::new();
-    let mut largest = 0usize;
-
-    for (idx, p) in payloads.iter().enumerate() {
-        let json = serde_json::to_string(p)?.replace("</script", "<\\/script");
-        largest = largest.max(json.len());
-        let tag_id = format!("cnvgrp-{idx}");
-        group_ids.insert(p.gene.clone(), tag_id.clone());
-        group_scripts.push(format!(
-            "<script type=\"application/json\" id=\"{tag_id}\">{json}</script>"
-        ));
-    }
-
-    let eff_default = if group_ids.contains_key(default_group) {
+    let eff_default = if group_names.iter().any(|g| g == default_group) {
         default_group.to_string()
     } else {
-        payloads[0].gene.clone()
+        group_names[0].clone()
     };
 
-    let config_json = serde_json::to_string(&PageConfig {
-        default_group: eff_default.clone(),
-        ntc_pattern: ntc_pattern.to_string(),
-        group_count: payloads.len(),
-        group_ids,
+    let meta_json = serde_json::to_string(&PlotMetaJson {
+        has_gene_data: true,
+        group_label: "gene",
+        samples: &sorted_samples,
+        ntc_samples: &ntc_samples,
+        groups: &group_names,
+        default_group: &eff_default,
+        dropped_unannotated_rows: 0,
     })?;
 
     let plotly_tag = if let Some(inline_path) = inline_plotly_path {
         let js = fs::read_to_string(inline_path)?.replace("</script", "<\\/script");
-        format!("<script>{js}</script>")
+        format!("<script>\n{js}\n</script>")
     } else {
         format!("<script src=\"{}\"></script>", html_escape(plotly_src))
     };
 
-    let options_html: String = payloads
-        .iter()
-        .map(|p| format!("<option value=\"{}\"></option>", html_escape(&p.gene)))
-        .collect();
-
-    let title_esc = html_escape(title);
-    let def_esc = html_escape(&eff_default);
-    let scripts_joined = group_scripts.join("");
-
-    let doc = format!(
-        "<!doctype html>
-<html lang=\"en\">
-<head>
-<meta charset=\"utf-8\">
-<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-<title>{title_esc}</title>
-<style>
-:root {{
-  color-scheme: light;
-  --ink: #17212b;
-  --muted: #61707e;
-  --line: #d9e1e7;
-  --panel: #ffffff;
-  --wash: #f4f7f9;
-  --accent: #0f6b78;
-  --accent-soft: #e2f1f3;
-  --radius: 10px;
-}}
-* {{ box-sizing: border-box; }}
-body {{ margin: 0; background: var(--wash); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; font-size: 14px; }}
-main {{ max-width: 1540px; margin: 0 auto; padding: 26px 34px 46px; }}
-header {{ display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 18px; }}
-h1 {{ margin: 0; font-size: clamp(25px, 2.2vw, 34px); letter-spacing: -0.035em; line-height: 1.08; font-weight: 700; }}
-.kicker {{ margin: 0 0 8px; color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; letter-spacing: .13em; text-transform: uppercase; }}
-.notice {{ margin: 9px 0 0; color: var(--muted); }}
-.summary {{ color: var(--muted); font-size: 12px; text-align: right; white-space: nowrap; }}
-.toolbar, .plot-panel, .calls-panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }}
-.toolbar {{ display: flex; align-items: center; flex-wrap: wrap; gap: 14px 18px; padding: 13px 16px; margin-bottom: 16px; }}
-.control {{ display: inline-flex; align-items: center; gap: 7px; color: var(--muted); }}
-.control label {{ font-size: 12px; font-weight: 600; }}
-input[type=\"search\"], select {{ border: 1px solid #bcc9d1; border-radius: 7px; color: var(--ink); background: #fff; padding: 8px 10px; font: inherit; min-height: 35px; }}
-input[type=\"search\"] {{ width: 180px; }}
-select {{ min-width: 165px; }}
-input:focus, select:focus {{ outline: 3px solid var(--accent-soft); border-color: var(--accent); }}
-.checks {{ display: inline-flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-left: auto; }}
-.check {{ display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }}
-.check input {{ accent-color: var(--accent); }}
-.plot-panel {{ padding: 8px 12px 0; min-height: 520px; }}
-#plot {{ width: 100%; height: 520px; }}
-.status {{ padding: 0 16px 12px; color: var(--muted); font-size: 12px; min-height: 17px; }}
-.calls-panel {{ margin-top: 16px; padding: 19px 20px 20px; }}
-.calls-heading {{ display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }}
-h2 {{ margin: 0; font-size: 17px; letter-spacing: -.02em; }}
-.strand-chip {{ display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); padding: 4px 9px; font-size: 11px; font-weight: 700; }}
-.strand-chip .arrow {{ font-size: 14px; line-height: 1; }}
-.table-wrap {{ overflow-x: auto; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-th {{ color: var(--muted); font-weight: 700; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); padding: 8px 9px; }}
-td {{ border-bottom: 1px solid #edf1f3; padding: 9px; vertical-align: middle; white-space: nowrap; }}
-tr:last-child td {{ border-bottom: 0; }}
-.sample-cell {{ display: inline-flex; align-items: center; gap: 7px; }}
-.sample-swatch {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%; }}
-.filter-tag {{ display: inline-block; border-radius: 4px; padding: 3px 6px; background: #edf2f4; color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }}
-.filter-tag.pass {{ background: #e4f3e7; color: #24643b; }}
-.empty {{ color: var(--muted); padding: 18px 9px; }}
-.definitions {{ margin-top: 17px; border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 12px; }}
-.definitions p {{ margin: 4px 0; }}
-.definitions strong {{ color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }}
-.disclaimer {{ margin-top: 18px; color: var(--muted); font-size: 12px; text-align: center; }}
-.error {{ color: #a53d3d; font-weight: 600; }}
-@media (max-width: 760px) {{
-  main {{ padding: 18px 14px 30px; }}
-  header {{ display: block; }}
-  .summary {{ margin-top: 10px; text-align: left; }}
-  .checks {{ width: 100%; margin-left: 0; }}
-  #plot {{ height: 460px; }}
-  .plot-panel {{ min-height: 460px; }}
-}}
-</style>
-</head>
-<body>
-<main>
-  <header>
-    <div>
-      <p class=\"kicker\">Unofficial review aid &middot; pure-Rust synthetic demo</p>
-      <h1>{title_esc}</h1>
-      <p class=\"notice\">Synthetic data only. Coordinates and calls are illustrative, not clinical results. Independent open-source project &mdash; not an official Illumina product.</p>
-    </div>
-    <div class=\"summary\">{g_len} genes / {s_len} samples / lazy per-gene payloads</div>
-  </header>
-  <section class=\"toolbar\" aria-label=\"Plot controls\">
-    <div class=\"control\"><label for=\"gene-search\">Gene</label><input id=\"gene-search\" type=\"search\" list=\"gene-list\" placeholder=\"Search genes\" autocomplete=\"off\"><datalist id=\"gene-list\">{options_html}</datalist></div>
-    <div class=\"control\"><label for=\"metric\">Y metric</label><select id=\"metric\"><option value=\"normalized_ratio\">normalized_ratio</option><option value=\"tn_log2\">tn_log2</option><option value=\"segment_mean\">segment_mean</option></select></div>
-    <div class=\"checks\">
-      <label class=\"check\"><input id=\"toggle-reference\" type=\"checkbox\" checked> reference lines</label>
-      <label class=\"check\"><input id=\"toggle-bands\" type=\"checkbox\" checked> PASS bands</label>
-      <label class=\"check\"><input id=\"toggle-strand\" type=\"checkbox\" checked> strand reversal</label>
-      <label class=\"check\"><input id=\"toggle-ntc\" type=\"checkbox\" checked> NTC styling</label>
-    </div>
-  </section>
-  <section class=\"plot-panel\" aria-label=\"Exon-level copy-number plot\">
-    <div id=\"plot\" aria-live=\"polite\"></div>
-    <div id=\"status\" class=\"status\"></div>
-  </section>
-  <section class=\"calls-panel\" aria-labelledby=\"calls-heading\">
-    <div class=\"calls-heading\"><h2 id=\"calls-heading\">Calls in <span id=\"current-gene\">{def_esc}</span></h2><span id=\"strand-chip\" class=\"strand-chip\"></span></div>
-    <div id=\"calls-table\" class=\"table-wrap\"></div>
-    <div id=\"definitions\" class=\"definitions\"></div>
-  </section>
-  <p class=\"disclaimer\">Unofficial independent review aid for DRAGEN CNV output formats &mdash; not affiliated with, endorsed by, or sponsored by Illumina, Inc., and not for diagnostic (IVD) use.</p>
-</main>
-{scripts_joined}
-<script id=\"cnv-config\" type=\"application/json\">{config_json}</script>
-{plotly_tag}
-<script>{PLOT_RUNTIME_JS}</script>
-</body>
-</html>
-",
-        g_len = payloads.len(),
-        s_len = parsed_samples.len(),
-    );
-
+    let escaped_title = html_escape(title);
     if let Some(parent) = out_html.parent() {
         fs::create_dir_all(parent)?;
     }
-    let bytes = doc.as_bytes();
+
+    let mut out = String::with_capacity(256 * 1024);
+    out.push_str(&format!(
+        "<!doctype html>
+<html lang=\"en\" data-theme=\"light\">
+<head>
+  <meta charset=\"utf-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
+  <title>{escaped_title}</title>
+  {plotly_tag}
+  <style>{PAGE_CSS}</style>
+</head>
+<body>
+  <div class=\"brand-spectrum\" aria-hidden=\"true\"></div>
+  <div class=\"wrap\">
+    <div class=\"header\">
+      <div class=\"header-brand\">
+        <div class=\"header-emblem\" aria-hidden=\"true\">
+          <svg width=\"26\" height=\"26\" viewBox=\"0 0 32 32\" fill=\"none\">
+            <path d=\"M3 10C9 10 11 22 16 22C21 22 23 10 29 10\" stroke=\"#66ddff\" stroke-width=\"2.2\" stroke-linecap=\"round\"/>
+            <path d=\"M3 22C9 22 11 10 16 10C21 10 23 22 29 22\" stroke=\"#00a3e0\" stroke-width=\"2.2\" stroke-linecap=\"round\" opacity=\"0.7\"/>
+            <line x1=\"6\" y1=\"16\" x2=\"26\" y2=\"16\" stroke=\"#c7ecff\" stroke-width=\"1.3\" stroke-linecap=\"round\"/>
+            <rect x=\"11\" y=\"10\" width=\"2.8\" height=\"6\" rx=\"1.4\" fill=\"#ff6a00\"/>
+            <rect x=\"14.8\" y=\"8\" width=\"2.8\" height=\"8\" rx=\"1.4\" fill=\"#ff6a00\"/>
+            <rect x=\"18.6\" y=\"16\" width=\"2.8\" height=\"6.5\" rx=\"1.4\" fill=\"#2e8bff\"/>
+          </svg>
+        </div>
+        <div>
+          <div class=\"eyebrow\">
+            <span class=\"eyebrow-word\">UNOFFICIAL AID</span>
+            <span class=\"eyebrow-dot\" aria-hidden=\"true\"></span>
+            <span class=\"eyebrow-suite\">Exon-Level CNV Review &middot; Synthetic Demo</span>
+          </div>
+          <h1 class=\"title\">{escaped_title}</h1>
+          <p class=\"subtitle\">100% synthetic batch (BRCA1, CFTR, EGFR, PTEN, DMD, TP53). Legend click toggles samples; double-click isolates one sample. Negative-strand genes read 5&#39;-&gt;3&#39;.</p>
+        </div>
+      </div>
+      <div class=\"header-actions\">
+        <div class=\"theme-toggle\" role=\"group\" aria-label=\"Color theme\">
+          <button type=\"button\" class=\"theme-btn is-active\" id=\"theme-light-btn\">Light</button>
+          <button type=\"button\" class=\"theme-btn\" id=\"theme-dark-btn\">Dark</button>
+        </div>
+      </div>
+    </div>
+
+    <div class=\"controls\">
+      <div class=\"control\">
+        <label id=\"group-label\" for=\"group-input\">Group</label>
+        <input id=\"group-input\" list=\"group-list\" placeholder=\"Type a gene or contig\" autocomplete=\"off\">
+        <datalist id=\"group-list\"></datalist>
+      </div>
+      <div class=\"control\">
+        <label for=\"metric-select\">Metric</label>
+        <select id=\"metric-select\">
+          <option value=\"normalized_ratio\">Normalized Ratio</option>
+          <option value=\"tn_log2\">TN Log2</option>
+          <option value=\"segment_mean\">Segment Mean</option>
+        </select>
+      </div>
+      <div class=\"control\">
+        <label for=\"sort-select\">Sort</label>
+        <select id=\"sort-select\">
+          <option value=\"x\">Target Order</option>
+          <option value=\"y_desc\">Y Desc</option>
+          <option value=\"y_asc\">Y Asc</option>
+        </select>
+      </div>
+      <button id=\"render-btn\" type=\"button\">Render</button>
+      <button id=\"reset-btn\" type=\"button\">Reset</button>
+      <div class=\"controls-options\">
+        <label class=\"toggle\"><input type=\"checkbox\" id=\"toggle-refs\" checked> Reference lines (0.5 / 1.0 / 1.5)</label>
+        <label class=\"toggle\"><input type=\"checkbox\" id=\"toggle-bands\" checked> Highlight PASS CNV regions</label>
+        <label class=\"toggle\"><input type=\"checkbox\" id=\"toggle-strand\" checked> Reverse axis for - strand genes</label>
+        <label class=\"toggle\"><input type=\"checkbox\" id=\"toggle-ntc\" checked> Style NTC samples</label>
+      </div>
+    </div>
+
+    <div class=\"meta\">
+      <div class=\"chip\" id=\"group-count-chip\"></div>
+      <div class=\"chip\" id=\"sample-count-chip\"></div>
+      <div class=\"chip\" id=\"ntc-chip\" hidden></div>
+      <div class=\"chip\" id=\"mode-chip\"></div>
+      <div class=\"chip\" id=\"strand-chip\" hidden></div>
+      <div class=\"chip\" id=\"dropped-chip\"></div>
+    </div>
+
+    <div class=\"panel\">
+      <div id=\"plot\"></div>
+      <div class=\"hint\">PASS CNV calls in the selected group are drawn as colored bands behind the points. Toggle them above if they hide markers.</div>
+    </div>
+
+    <div class=\"calls\">
+      <h2>CNV Calls In Current View</h2>
+      <p class=\"calls-desc\" id=\"calls-desc\"></p>
+      <div id=\"calls-content\"></div>
+      <div id=\"calls-filter-notes\" class=\"filter-notes\"></div>
+    </div>
+    <p class=\"hint\" style=\"margin-top:18px;text-align:center;\">Unofficial independent review aid for DRAGEN CNV output files &mdash; not affiliated with or endorsed by Illumina, Inc., and not for diagnostic (IVD) use. All coordinates and values on this page are synthetic.</p>
+  </div>
+<script id=\"plot-meta\" type=\"application/json\">{meta_json}</script>
+"
+    ));
+
+    let _unused = FxHashSet::<u8>::default();
+    for (idx, payload) in serialized_groups.iter().enumerate() {
+        out.push_str(&format!(
+            "<script id=\"g{idx}\" type=\"application/json\">{payload}</script>\n"
+        ));
+    }
+    out.push_str(&format!("  <script>{PAGE_JS}</script>\n</body>\n</html>\n"));
+
+    let bytes = out.as_bytes();
     fs::write(out_html, bytes)?;
     Ok((bytes.len(), largest))
-}
-
-#[inline]
-fn s_unused_suppress(samples: &[SampleData]) -> usize {
-    samples.iter().map(|s| s.result_dir.as_os_str().len()).sum()
 }

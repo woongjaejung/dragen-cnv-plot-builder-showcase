@@ -13,11 +13,15 @@ In **v4**, the entire pipeline and desktop shell were re-architected from **Pyth
 
 ## Live interactive demo
 
-**[Open the live synthetic CNV showcase →](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/)**
+**[Open the live synthetic CNV showcase →](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/demo/)** · **[Landing page →](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/)**
 
-[![Interactive exon-level CNV plot, synthetic data](assets/demo-plot.png)](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/demo/)
+[![Interactive exon-level CNV plot walkthrough (v4 Light & Dark UI)](assets/demo-walkthrough.gif)](https://woongjaejung.github.io/dragen-cnv-plot-builder-showcase/demo/)
 
-Twelve genes and fourteen synthetic samples (including two no-template controls). Search a gene, switch metrics (`normalized_ratio`, `tn_log2`, `segment_mean`), isolate samples in the legend, and inspect the call table below. Six clinical review scenarios are planted in the batch — see [What the demo is showing you](#what-the-demo-is-showing-you).
+Twelve genes and fourteen synthetic samples (including two no-template controls). Search a gene, switch metrics (`Normalized Ratio`, `TN Log2`, `Segment Mean`), toggle **Light / Dark** themes, isolate samples in the legend, and inspect the `PASS` + `FILTERED` call table underneath. Six clinical review scenarios are planted in the batch — see [What the demo is showing you](#what-the-demo-is-showing-you).
+
+### Native Tauri v2 desktop app (`23 MB` single-file Windows `.exe`)
+
+![Native v4 Tauri v2 + Pure Rust desktop application (synthetic batch)](assets/demo-desktop-v4.png)
 
 ---
 

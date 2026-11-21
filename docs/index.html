@@ -317,16 +317,22 @@ footer a { overflow-wrap: anywhere; }
   <section aria-labelledby="output" id="output-section">
     <div class="wrap">
       <div class="section-head">
-        <p class="eyebrow">The output</p>
-        <h2 id="output">One file the reviewer opens, searches, and attaches to a case</h2>
+        <p class="eyebrow">Live walkthrough</p>
+        <h2 id="output">One interactive file — gene search, batch overlay, metric switching, and Dark Mode</h2>
       </div>
       <figure class="shot">
         <a href="demo/">
-          <img src="assets/demo-plot.png" width="2400" height="1010"
-               alt="The interactive plot: exon-level coverage for one gene, every sample in the batch overlaid, copy-state reference lines, and a table of calls underneath."
-               onerror="document.getElementById('output-section').remove()">
+          <video src="assets/demo-walkthrough.mp4" poster="assets/demo-plot.png"
+                 autoplay loop muted playsinline
+                 style="display:block;width:100%;height:auto;"></video>
         </a>
-        <figcaption>The generated plot, synthetic batch &mdash; select to open the live demo.</figcaption>
+        <figcaption>Live v4 report walkthrough (BRCA1 whole-gene DEL &rarr; CFTR batch artifact &rarr; EGFR focal DUP &rarr; TN Log2 &rarr; Dark Mode TP53) &mdash; click to try the interactive demo.</figcaption>
+      </figure>
+      <figure class="shot" style="margin-top:2rem;">
+        <img src="assets/demo-desktop-v4.png"
+             alt="Native v4 Tauri v2 + Pure Rust desktop application showing 3-step workflow and 1.56s build completion."
+             style="display:block;width:100%;height:auto;border:1px solid var(--rule);border-radius:4px;">
+        <figcaption>The v4 Tauri v2 + Pure Rust desktop wrapper (23 MB single-file portable Windows .exe, 100% offline).</figcaption>
       </figure>
     </div>
   </section>

@@ -5,9 +5,6 @@ demo/** linguist-documentation=false
 demo/** linguist-vendored=false
 demo/** linguist-detectable=true
 
-# Browser plot runtime bundled into the generated HTML page.
-demo/src/plot_runtime.js linguist-detectable=true
-
 # Third-party library shipped so the demo page loads nothing remote.
 docs/vendor/** linguist-vendored
 
